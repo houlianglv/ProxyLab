@@ -11,6 +11,7 @@
 
 #include "csapp.h"
 #include "sbuf.h"
+#include "cache.h"
 #define NTHREADS 4
 #define SBUFSIZE 16
 #define PROXYPORT 8080
@@ -24,13 +25,16 @@ void* thread(void* arg);
 void proxy_handler(struct thread_arg* arg);
 
 /*
- *Global Var
+ * Global Variables
  */
+static struct Cache cache; /* cache linked list */
 FILE *log_file;
 sbuf_t sbuf; /* Shared buffer for connected descriptors */
+static char *connectionheader = "Connection: close\r\n";
+static char *proxyconnectionheader = "Proxy-Connection: close\r\n";
 
 /*
- * main - Main routine for the proxy program
+ * main - Main thread routine for the proxy server
  */
 int main(int argc, char **argv)
 {
@@ -42,6 +46,7 @@ int main(int argc, char **argv)
     pthread_t tid;
 
     Signal(SIGPIPE, SIG_IGN);
+    cache_init(&cache);
     log_file = fopen("./proxy.log", "a");
     if(!log_file){
         perror("open file error");
@@ -142,6 +147,17 @@ void proxy_handler(struct thread_arg *arg){
         return;
     }
 
+    //look for the cache
+    int length;
+    char data[MAX_OBJECT_SIZE];
+    if(cache_get(&cache, uri, &length, (void *)data) == 0){
+        printf("Cache hit!\n");
+        Rio_writen(clientfd, data, length);
+        Close(clientfd);
+        return;
+    }
+
+
     //open connection to the real server
     rio_t server_rio;
     int to_server_fd = Open_clientfd(hostname, port);
@@ -153,41 +169,36 @@ void proxy_handler(struct thread_arg *arg){
     //send request headers to the real server
     ssize_t n = 0;
     while ((n = Rio_readlineb(&rio, line, MAXLINE)) > 2){
-        if (strstr(line, "Proxy-Connection"))
-            strcpy(line, "Proxy-Connection: close\r\n");
-        else if (strstr(line, "Connection"))
-            strcpy(line, "Connection: close\r\n");
-
+        if (strstr(line, "Proxy-Connection")){
+            Rio_writen(to_server_fd, proxyconnectionheader, strlen(proxyconnectionheader));
+        }else if(strstr(line, "Connection")){
+            Rio_writen(to_server_fd, connectionheader, strlen(connectionheader));
+        }
         printf("header from client: %s", line);
-
         Rio_writen(to_server_fd, line, strlen(line));
 
     }
     Rio_writen(to_server_fd, "\r\n", 2);
 
     // read content from server
-    while ((n = Rio_readlineb(&server_rio, buf, MAXLINE)) > 2)
-    {
-        printf("header read from real server: %s", buf);
+    int l = 0, put_to_cache = 1;
+    while ((n = Rio_readlineb(&server_rio, buf, MAXLINE)) != 0){
+        if(l + n < MAX_OBJECT_SIZE){
+            memcpy(data + l, buf, n);
+            l += n;
+        }else{
+            put_to_cache = 0;
+        }
         Rio_writen(clientfd, buf, strlen(buf));
     }
-
-    Rio_writen(clientfd, "\r\n", 2);
-    char body[MAXLINE];
-    int total_size = 0;
-
-    //send back to browser
-    ssize_t size;
-    while ((size = Rio_readnb(&server_rio, body, MAXLINE)) > 0){
-        Rio_writen(clientfd, body, size);
-        total_size += size;
+    if(put_to_cache){
+        printf("Caching uri %s length %d\n", uri, l);
+        cache_put(&cache, uri, l, data);
     }
+
     Close(to_server_fd);
-    printf("ready to write log\n");
-    format_log_entry(buf, &sock, uri, total_size);
-    fprintf(log_file, "%s\n", buf);
-    fflush(log_file);
-    printf("write to log success\n");
+    Close(clientfd);
+    printf("proxy_handler success!\n");
     return;
 }
 

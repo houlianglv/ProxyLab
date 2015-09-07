@@ -21,8 +21,11 @@ proxy.o: proxy.c csapp.h sbuf.h
 sbuf.o: sbuf.c sbuf.h csapp.h
 	$(CC) $(CFLAGS) -c sbuf.c $(LDFLAGS)
 
-proxy: sbuf.o proxy.o csapp.o
-	$(CC) $(CFLAGS) -o proxy proxy.o csapp.o sbuf.o $(LDFLAGS)
+cache.o: cache.c cache.h csapp.h
+	$(CC) $(CFLAGS) -c cache.c $(LDFLAGS)
+
+proxy: sbuf.o proxy.o csapp.o cache.o
+	$(CC) $(CFLAGS) -o proxy proxy.o csapp.o sbuf.o cache.o $(LDFLAGS)
 # Creates a tarball in ../proxylab-handin.tar that you should then
 # hand in to Autolab. DO NOT MODIFY THIS!
 handin:
